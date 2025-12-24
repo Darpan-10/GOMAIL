@@ -22,6 +22,7 @@ app.add_middleware(
 
 api_key = os.getenv("GEMINI_API_KEY")
 
+
 client = genai.Client(api_key=api_key)
 
 class GenerateRequest(BaseModel):
@@ -31,7 +32,7 @@ class GenerateRequest(BaseModel):
     sender_company: str | None = None
     email_type: str
     tone: str
-    instruction: str
+    instruction: str | None = None
 
 def build_request(req: GenerateRequest) -> str:
     sender_info = ""
@@ -45,7 +46,7 @@ def build_request(req: GenerateRequest) -> str:
         f"Client name: {req.client_name}\n"
         f"Company: {req.company_name or 'N/A'}\n"
         f"{sender_info}"
-        f"Instructions: {req.instruction}\n\n"
+        f"Instructions: {req.instruction or ""}\n\n"
         "Return JSON with keys: subject, body, closing. "
         "The closing should be formatted as 'Warmly,\\n{My Name}\\n{My Company}' (using the provided My Name and My Company if available). "
         "Do not add extra commentary."
@@ -53,28 +54,46 @@ def build_request(req: GenerateRequest) -> str:
 
 @app.post("/generate")
 def generate(req: GenerateRequest):
-    prompt = build_request(req)
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1
+    try:
+        prompt = build_request(req)
 
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1
+            )
         )
-    )
-    response_text = response.text.strip()
-    
-   
-    if response_text.startswith("```json"):
-        response_text = response_text[7:]
-    if response_text.startswith("```"):
-        response_text = response_text[3:]
-    if response_text.endswith("```"):
-        response_text = response_text[:-3]
-    
-    response_text = response_text.strip()
-    email_data = json.loads(response_text)
-    
-    return JSONResponse(content=email_data)
 
+        response_text = response.text.strip()
+
+        # Remove markdown wrappers if present
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+
+        response_text = response_text.strip()
+
+        # Try parsing JSON safely
+        try:
+            email_data = json.loads(response_text)
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=200,  # still return something usable
+                content={
+                    "subject": "Generated Email",
+                    "body": response_text,
+                    "closing": f"Warmly,\n{req.sender_name or ''}\n{req.sender_company or ''}"
+                }
+            )
+
+        return email_data
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Email generation failed",
+                "detail": str(e)
+            }
+        )
 
